@@ -1,5 +1,7 @@
 # Azure Blob File Upload API
 
+[![CI](https://github.com/akash9891/azure-file-uploads/actions/workflows/ci.yml/badge.svg)](https://github.com/akash9891/azure-file-uploads/actions/workflows/ci.yml)
+
 ASP.NET Core (.NET 10) minimal API that accepts file uploads, stores them in a private Azure Blob Storage container, and saves file metadata (filename, size, upload timestamp, blob URL) to PostgreSQL using Entity Framework Core.
 
 Azure authentication uses `DefaultAzureCredential`, so no storage keys or connection strings for Azure are needed. Locally it uses your Azure CLI login.
@@ -186,3 +188,26 @@ The tests host the API with `WebApplicationFactory`, using an EF Core in-memory 
 - missing, empty, oversized and disallowed-type files
 - blob cleanup when the database fails
 - GET by id
+
+## CI/CD
+
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs on every push to `main`, on pull requests, and on demand.
+
+1. **Build and test:** restores, builds, and runs `dotnet test`. Test results (`.trx`) are attached to the run.
+2. **Build Docker image:** runs only if the tests pass. It builds the image from the `Dockerfile`. On pushes to `main`, it also publishes the image to GitHub Container Registry, tagged `latest` and with the commit SHA. Pull requests only build the image, to check that the `Dockerfile` still works.
+
+The pipeline needs no secrets: it pushes with the built-in `GITHUB_TOKEN`. To run the published image instead of building it:
+
+```powershell
+docker compose pull api
+docker compose up
+```
+
+### Deploying to Azure (next step, not set up)
+
+The pipeline stops at publishing the image. Deploying to Azure Container Apps would add a third job, with no code changes:
+
+- **GitHub → Azure sign-in:** `azure/login` with **OIDC**. An Entra app registration has a federated credential that trusts only this repo's `main` branch, so no Azure secret is stored in GitHub.
+- **Deploy:** `az containerapp update --image ghcr.io/akash9891/azure-file-uploads:<sha>`.
+- **App → Azure sign-in:** a **user-assigned Managed Identity** with *Storage Blob Data Contributor* on the storage account. Setting `AZURE_CLIENT_ID` to that identity's client ID lets `DefaultAzureCredential` use it, and the local service principal variables are left unset.
+- **Database:** Azure Database for PostgreSQL. The connection string is stored in **Azure Key Vault** and read by the Container App through the same Managed Identity (*Key Vault Secrets User*). `Database__MigrateOnStartup=true` creates the schema on first start.

@@ -17,6 +17,8 @@ services:
       retries: 10
 
   api:
+    # `docker compose up --build` builds locally; `docker compose pull api` fetches the image CI publishes.
+    image: ghcr.io/akash9891/azure-file-uploads:latest
     build: .
     depends_on:
       db:
