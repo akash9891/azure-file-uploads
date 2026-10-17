@@ -6,6 +6,19 @@ ASP.NET Core (.NET 10) minimal API that accepts file uploads, stores them in a p
 
 Azure authentication uses `DefaultAzureCredential`, so no storage keys or connection strings for Azure are needed. Locally it uses your Azure CLI login.
 
+## For reviewers
+
+There are three ways to check that the app works. No secrets are committed to this repo: `.env` is git-ignored, and `.env.example` documents every variable.
+
+1. **Quick check, no Azure or database needed:** run `dotnet test`. The 9 integration tests run the real API with an in-memory database and a fake blob store (see [Tests](#tests)). The [CI workflow](https://github.com/akash9891/azure-file-uploads/actions/workflows/ci.yml) runs the same tests and builds the Docker image on every push.
+2. **Already verified against real Azure:** on 2026-10-17, using `docker compose up` (see [Run with Docker Compose](#run-with-docker-compose)):
+   - `POST /api/files` returned `201 Created`, with a response like the one in [API](#api).
+   - The blob was confirmed in the `uploads` container of the `fileuploads47akash` storage account with `az storage blob show`.
+   - The matching row (filename, size, upload timestamp, blob URL) was confirmed in PostgreSQL.
+3. **Live upload test, on request:** I can provide a **time-limited, least-privilege credential**. It's a separate client secret for this project's service principal, and it only has *Storage Blob Data Contributor* on the demo storage account. You get it privately as a ready-to-use `.env` file, and it's revoked after the review. Uploaded files go to my Azure container, and their metadata goes to the PostgreSQL that Docker Compose starts on your machine.
+
+   To use your own storage instead, create a service principal as described in [Run with Docker Compose](#run-with-docker-compose). Then set `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_CONTAINER` in `.env` to your account and container.
+
 ## Project layout
 
 ```
