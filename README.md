@@ -8,7 +8,9 @@ Azure authentication uses `DefaultAzureCredential`, so no storage keys or connec
 
 ## For reviewers
 
-There are three ways to check that the app works. No secrets are committed to this repo: `.env` is git-ignored, and `.env.example` documents every variable.
+There are several ways to check that the app works. No secrets are committed to this repo: `.env` is git-ignored, and `.env.example` documents every variable.
+
+- **Run the containers without any setup:** clone the repo and run `docker compose up --build`. The API and PostgreSQL start, the database tables are created, and `GET http://localhost:8080/api/files` responds. Uploads return `502` until Azure credentials are added (see step 3 below).
 
 1. **Quick check, no Azure or database needed:** run `dotnet test`. The 9 integration tests run the real API with an in-memory database and a fake blob store (see [Tests](#tests)). The [CI workflow](https://github.com/akash9891/azure-file-uploads/actions/workflows/ci.yml) runs the same tests and builds the Docker image on every push.
 2. **Already verified against real Azure:** on 2026-10-17, using `docker compose up` (see [Run with Docker Compose](#run-with-docker-compose)):
@@ -53,6 +55,8 @@ dotnet-tools.json             local dotnet-ef tool
 
 `docker-compose.yml` runs the API (built from the `Dockerfile`) and PostgreSQL 17. Database data is kept in the `pgdata` volume. On startup the API applies the EF Core migrations itself, so `dotnet ef` isn't needed.
 
+`.env` is optional. Without it, the database uses a local-only default password, and everything works except uploads, which return `502` until Azure credentials are set. To upload to Azure, follow these steps:
+
 ### 1. Create a service principal (one time)
 
 A container can't use your `az login`, so it signs in to Azure as a **service principal**, an app identity with its own secret. Create one that can only write blobs in this storage account:
@@ -86,7 +90,7 @@ curl.exe -i -F "file=@C:\path\to\notes.txt" http://localhost:8080/api/files
 curl.exe http://localhost:8080/api/files
 ```
 
-PostgreSQL is published on host port **5433**, so it doesn't clash with a standalone container on 5432. Stop everything with `docker compose down`. Add `-v` to also delete the database volume.
+PostgreSQL is published on host port **5433**, and only on this machine (`127.0.0.1`), so it doesn't clash with a standalone container on 5432. Stop everything with `docker compose down`. Add `-v` to also delete the database volume.
 
 The service principal is only for running the containers locally. When the app is deployed to Azure, use a Managed Identity instead (see [Azure authentication](#azure-authentication)) and leave the `AZURE_CLIENT_*` variables unset.
 
@@ -153,6 +157,7 @@ All settings can be set in `appsettings.json`, with user-secrets, or with enviro
 | `Upload:AllowedExtensions` | `Upload__AllowedExtensions__0`, `__1`, ... | `.txt .pdf .png .jpg .jpeg .gif .csv .json .docx .xlsx` | Allowed file extensions |
 | `Database:MigrateOnStartup` | `Database__MigrateOnStartup` | `false` | Apply EF Core migrations at startup (set to `true` by Docker Compose) |
 | — | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | *(unset)* | Service principal for `DefaultAzureCredential`, used when running in Docker |
+| — | `AZURE_TOKEN_CREDENTIALS` | *(unset; Docker Compose sets `EnvironmentCredential`)* | Limits `DefaultAzureCredential` to one sign-in method. In Compose this skips the Managed Identity probe, which only works inside Azure. |
 
 Docker Compose reads its values from `.env`. See `.env.example` for the full list.
 
@@ -163,7 +168,7 @@ The account and container names identify the resource; they are not secrets. To 
 The app builds a `BlobServiceClient` with `DefaultAzureCredential`:
 
 - **Locally (Development):** it uses the Azure CLI login from `az login`. Managed Identity is skipped in Development, because off Azure its probe can fail and stop the credential chain. The `az` executable must be on `PATH`, so open a new terminal after installing the Azure CLI.
-- **In Docker Compose:** it uses the service principal from the `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` environment variables. These are checked before Managed Identity.
+- **In Docker Compose:** it uses the service principal from the `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` environment variables. Compose also sets `AZURE_TOKEN_CREDENTIALS=EnvironmentCredential`, so if those variables are missing the upload fails straight away with a clear message instead of waiting on the Managed Identity probe.
 - **When deployed to Azure:** enable a Managed Identity on the app and grant it **Storage Blob Data Contributor** on the storage account. No code changes are needed.
 
 ## API

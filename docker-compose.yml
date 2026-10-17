@@ -3,13 +3,15 @@ services:
     image: postgres:17
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fileuploads}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      # Local-only default so `docker compose up` works straight after cloning; override it in .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
       POSTGRES_DB: ${POSTGRES_DB:-fileuploads}
     volumes:
       - pgdata:/var/lib/postgresql/data
     # Host port 5433 avoids a clash with a standalone PostgreSQL already on 5432.
+    # Bound to 127.0.0.1 so the database is reachable from this machine only.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fileuploads} -d ${POSTGRES_DB:-fileuploads}"]
       interval: 5s
@@ -26,14 +28,17 @@ services:
     ports:
       - "8080:8080"
     environment:
-      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-fileuploads};Username=${POSTGRES_USER:-fileuploads};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-fileuploads};Username=${POSTGRES_USER:-fileuploads};Password=${POSTGRES_PASSWORD:-change-me}"
       Database__MigrateOnStartup: "true"
       AzureStorage__AccountName: ${AZURE_STORAGE_ACCOUNT:-fileuploads47akash}
       AzureStorage__ContainerName: ${AZURE_STORAGE_CONTAINER:-uploads}
       # Service principal read by DefaultAzureCredential (EnvironmentCredential); the container has no Azure CLI login.
-      AZURE_TENANT_ID: ${AZURE_TENANT_ID:?Set AZURE_TENANT_ID in .env}
-      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:?Set AZURE_CLIENT_ID in .env}
-      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:?Set AZURE_CLIENT_SECRET in .env}
+      # Optional: without them the API and database still run, and only uploads fail with 502.
+      # Only the service principal applies here; this stops DefaultAzureCredential from probing for a Managed Identity.
+      AZURE_TOKEN_CREDENTIALS: EnvironmentCredential
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
 
 volumes:
   pgdata:
