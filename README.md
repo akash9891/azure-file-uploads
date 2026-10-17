@@ -4,7 +4,7 @@
 
 ASP.NET Core (.NET 10) minimal API that accepts file uploads, stores them in a private Azure Blob Storage container, and saves file metadata (filename, size, upload timestamp, blob URL) to PostgreSQL using Entity Framework Core.
 
-Azure authentication uses `DefaultAzureCredential`, so no storage keys or connection strings for Azure are needed. Locally it uses your Azure CLI login.
+Azure authentication uses `DefaultAzureCredential`, so no storage keys or connection strings for Azure are needed. It signs in with your Azure CLI login under `dotnet run`, with a service principal in Docker, and with a Managed Identity when deployed.
 
 ## For reviewers
 
@@ -19,22 +19,78 @@ There are three ways to check that the app works. No secrets are committed to th
 
    To use your own storage instead, create a service principal as described in [Run with Docker Compose](#run-with-docker-compose). Then set `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_CONTAINER` in `.env` to your account and container.
 
+## Assignment checklist
+
+| Requirement | Status | Where |
+|---|---|---|
+| File upload endpoint: saves to Azure Blob Storage and returns the blob URL | ✅ | `POST /api/files`: `src/FileUploads.Api/Endpoints/FileEndpoints.cs`, `Services/AzureBlobStorageService.cs` |
+| Database record with filename, file size, upload timestamp and blob URL | ✅ | PostgreSQL through EF Core: `Data/FileRecord.cs`, `Migrations/` |
+| Dockerfile, plus docker-compose for the local database | ✅ | `Dockerfile`, `docker-compose.yml` (API + PostgreSQL), see [Run with Docker Compose](#run-with-docker-compose) |
+| GitHub repo with a README covering setup and environment variables | ✅ | This README, [Configuration](#configuration), `.env.example` |
+| **Bonus:** security, with no hardcoded connection strings | ✅ / 🟡 | Azure access uses `DefaultAzureCredential` with RBAC: no storage keys or connection strings in code or config. Secrets come from user-secrets or a git-ignored `.env`. Managed Identity is supported with no code changes, but it is only used once the app is deployed (see [Azure authentication](#azure-authentication)). Key Vault is designed but not set up. |
+| **Bonus:** CI/CD with GitHub Actions | 🟡 | `.github/workflows/ci.yml` tests, builds and publishes the Docker image to GHCR on every push. Deploying to Azure is designed but not set up (see [CI/CD](#cicd)). |
+| **Bonus:** automated tests for the upload route | ✅ | 9 integration tests in `tests/FileUploads.Api.Tests/` (see [Tests](#tests)) |
+
 ## Project layout
 
 ```
 src/FileUploads.Api/          API (endpoints, EF Core DbContext + migrations, blob service)
 tests/FileUploads.Api.Tests/  xUnit integration tests (in-memory DB + fake blob store)
+Dockerfile                    multi-stage build of the API image
+docker-compose.yml            API + PostgreSQL for local runs
+.env.example                  template for the git-ignored .env used by Docker Compose
+.github/workflows/ci.yml      CI: test, build and publish the Docker image
 dotnet-tools.json             local dotnet-ef tool
 ```
 
 ## Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
-- Docker (runs PostgreSQL, or the whole app with Docker Compose)
-- An Azure Storage account and container. Your Azure identity needs the **Storage Blob Data Contributor** role on that storage account.
+- **Docker Compose:** [Docker Desktop](https://www.docker.com/products/docker-desktop/), plus Azure credentials for a service principal (see below).
+- **Without Docker, or to run the tests:** the [.NET 10 SDK](https://dotnet.microsoft.com/download) and the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli). Docker is still used for PostgreSQL.
+- An Azure Storage account and container. The identity the app signs in with needs the **Storage Blob Data Contributor** role on that storage account.
 
-## Setup
+## Run with Docker Compose
+
+`docker-compose.yml` runs the API (built from the `Dockerfile`) and PostgreSQL 17. Database data is kept in the `pgdata` volume. On startup the API applies the EF Core migrations itself, so `dotnet ef` isn't needed.
+
+### 1. Create a service principal (one time)
+
+A container can't use your `az login`, so it signs in to Azure as a **service principal**, an app identity with its own secret. Create one that can only write blobs in this storage account:
+
+```powershell
+az ad sp create-for-rbac --name fileuploads-docker `
+  --role "Storage Blob Data Contributor" `
+  --scopes /subscriptions/<subscription-id>/resourceGroups/file-upload-demo/providers/Microsoft.Storage/storageAccounts/fileuploads47akash
+```
+
+The command prints `appId`, `password` and `tenant`. Store them safely: the password isn't shown again. The role assignment can take a few minutes to take effect.
+
+### 2. Create `.env`
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Fill in `POSTGRES_PASSWORD`, plus `AZURE_TENANT_ID` (from `tenant`), `AZURE_CLIENT_ID` (from `appId`) and `AZURE_CLIENT_SECRET` (from `password`). `.env` is git-ignored, so never commit it.
+
+### 3. Start it
+
+```powershell
+docker compose up --build
+```
+
+The API listens on `http://localhost:8080`:
+
+```powershell
+curl.exe -i -F "file=@C:\path\to\notes.txt" http://localhost:8080/api/files
+curl.exe http://localhost:8080/api/files
+```
+
+PostgreSQL is published on host port **5433**, so it doesn't clash with a standalone container on 5432. Stop everything with `docker compose down`. Add `-v` to also delete the database volume.
+
+The service principal is only for running the containers locally. When the app is deployed to Azure, use a Managed Identity instead (see [Azure authentication](#azure-authentication)) and leave the `AZURE_CLIENT_*` variables unset.
+
+## Run locally without Docker
 
 ### 1. Sign in to Azure
 
@@ -83,47 +139,6 @@ dotnet run --project src/FileUploads.Api --launch-profile http
 ```
 
 The API listens on `http://localhost:5097`. In Development, the OpenAPI document is at `/openapi/v1.json`.
-
-## Run with Docker Compose
-
-`docker-compose.yml` runs the API (built from the `Dockerfile`) and PostgreSQL 17. Database data is kept in the `pgdata` volume. On startup the API applies the EF Core migrations itself, so `dotnet ef` isn't needed.
-
-### 1. Create a service principal (one time)
-
-A container can't use your `az login`, so it signs in to Azure as a **service principal**, an app identity with its own secret. Create one that can only write blobs in this storage account:
-
-```powershell
-az ad sp create-for-rbac --name fileuploads-docker `
-  --role "Storage Blob Data Contributor" `
-  --scopes /subscriptions/<subscription-id>/resourceGroups/file-upload-demo/providers/Microsoft.Storage/storageAccounts/fileuploads47akash
-```
-
-The command prints `appId`, `password` and `tenant`. Store them safely: the password isn't shown again. The role assignment can take a few minutes to take effect.
-
-### 2. Create `.env`
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Fill in `POSTGRES_PASSWORD`, plus `AZURE_TENANT_ID` (from `tenant`), `AZURE_CLIENT_ID` (from `appId`) and `AZURE_CLIENT_SECRET` (from `password`). `.env` is git-ignored, so never commit it.
-
-### 3. Start it
-
-```powershell
-docker compose up --build
-```
-
-The API listens on `http://localhost:8080`:
-
-```powershell
-curl.exe -i -F "file=@C:\path\to\notes.txt" http://localhost:8080/api/files
-curl.exe http://localhost:8080/api/files
-```
-
-PostgreSQL is published on host port **5433**, so it doesn't clash with a standalone container on 5432. Stop everything with `docker compose down`. Add `-v` to also delete the database volume.
-
-The service principal is only for running the containers locally. When the app is deployed to Azure, use a Managed Identity instead (see [Azure authentication](#azure-authentication)) and leave the `AZURE_CLIENT_*` variables unset.
 
 ## Configuration
 
@@ -178,6 +193,8 @@ Response:
   "blobUrl": "https://fileuploads47akash.blob.core.windows.net/uploads/4e73bf9458204d10af16b33e849d1903.txt"
 }
 ```
+
+In Postman: **POST** → **Body** → **form-data**, then add the key `file`, set its type to **File** and choose a file. Use port `8080` for Docker Compose, or `5097` for `dotnet run`.
 
 The container is private, so `blobUrl` identifies the blob but can't be opened anonymously.
 
